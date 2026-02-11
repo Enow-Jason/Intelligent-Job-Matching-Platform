@@ -35,3 +35,16 @@ out/
 
 ### VS Code ###
 .vscode/
+
+### Jupyter Notebook ###
+# datasets + outputs
+data/
+!data/.gitkeep
+
+# Jupyter noise
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+
+# large artifacts
+*.parquet
+*.npy
