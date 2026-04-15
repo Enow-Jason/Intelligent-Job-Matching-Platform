@@ -48,3 +48,5 @@ notebooks/.ipynb_checkpoints/
 # large artifacts
 *.parquet
 *.npy
+
+.venv/
