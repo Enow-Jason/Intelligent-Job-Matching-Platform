@@ -5,6 +5,7 @@ Purpose:
 - Load processed datasets and embeddings once at startup
 - Provide the final ranking logic for the AI service
 - Provide robust skill-gap explanations
+- Support uploaded resume matching with lightweight structured parsing (Option B)
 
 This file contains NO FastAPI route logic.
 It is purely the AI / ranking layer.
@@ -15,23 +16,20 @@ It is purely the AI / ranking layer.
 # -----------------------------
 from pathlib import Path
 import re
-from collections import Counter
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any
 
 import numpy as np
-import pandas as pd
-from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer
+
+
+
+
+
 
 
 # -----------------------------
 # Configuration
 # -----------------------------
-
-# Project root
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-# Processed artifacts created by the notebooks
 DATA_PROCESSED = REPO_ROOT / "data" / "processed"
 
 JOBS_PARQUET = DATA_PROCESSED / "jobs_clean.parquet"
@@ -40,16 +38,15 @@ JOB_EMB_NPY = DATA_PROCESSED / "job_emb.npy"
 RESUME_EMB_NPY = DATA_PROCESSED / "resume_emb.npy"
 
 # Final tuned ranking weights
-# final_score = W_SEM * semantic + W_EXP * (semantic * experience_penalty)
 W_SEM = 0.8
 W_EXP = 0.2
 
 # Final calibrated experience-penalty parameters
-# Based on Notebook 07 calibration results
 EXP_PENALTY_FLOOR = 0.3
 EXP_PENALTY_SLOPE = 0.15
 
-# Model used only for robust skill explanation
+# Embedding models
+EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 SKILL_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Threshold for semantic skill matching
@@ -59,36 +56,31 @@ SKILL_SIM_THRESHOLD = 0.70
 # -----------------------------
 # Global state (loaded once at startup)
 # -----------------------------
-
-# Main processed tables
 jobs_df = None
 resumes_df = None
 
-# Main semantic embeddings
 job_emb = None
 resume_emb = None
 
-# Global frequency of job skills
 job_skill_freq = None
 
-# ID lookup maps for fast access
 job_id_to_idx = {}
 resume_id_to_idx = {}
 
-# Semantic skill-matching model
+embed_model = None
 skill_model = None
 
-# Precomputed embeddings for expanded job skill variants
 job_skill_to_emb = {}
-
-# Cache of embedded resume-skill variants
 resume_skill_emb_cache = {}
+
+# Helpful vocabularies derived from the dataset
+known_titles = []
+known_title_embeddings = None
 
 
 # -----------------------------
 # Utility functions
 # -----------------------------
-
 def parse_years_range(x: str) -> Tuple[Optional[int], Optional[int]]:
     """
     Parse job experience text into (min_years, max_years).
@@ -103,22 +95,19 @@ def parse_years_range(x: str) -> Tuple[Optional[int], Optional[int]]:
 
     s = str(x).lower().strip()
     s = s.replace("years", "").replace("year", "").strip()
-    s = s.replace("–", "-")  # replace en-dash with normal hyphen
+    s = s.replace("–", "-")
 
     if not s:
         return (None, None)
 
-    # Pattern like "10+"
     m = re.match(r"(\d+)\s*\+", s)
     if m:
         return (int(m.group(1)), None)
 
-    # Pattern like "4-7"
     m = re.match(r"(\d+)\s*-\s*(\d+)", s)
     if m:
         return (int(m.group(1)), int(m.group(2)))
 
-    # Pattern like a single number
     m = re.match(r"(\d+)", s)
     if m:
         v = int(m.group(1))
@@ -134,15 +123,10 @@ def experience_penalty(
         slope: float = EXP_PENALTY_SLOPE
 ) -> float:
     """
-    Soft experience penalty.
+    Calibrated soft experience penalty.
 
-    Behavior:
-    - If the job has no minimum experience, return 1.0
-    - If the candidate meets the minimum, return 1.0
-    - Otherwise, reduce the score gradually based on the experience gap
-
-    Final calibrated form:
-        max(floor_value, 1.0 - slope * gap)
+    If resume_years is below the job minimum:
+        penalty = max(floor_value, 1 - slope * gap)
     """
     if job_min is None:
         return 1.0
@@ -154,11 +138,38 @@ def experience_penalty(
     return 1.0
 
 
+def normalize_text(x: str) -> str:
+    """
+    Basic text cleaning utility.
+    """
+    if x is None:
+        return ""
+    s = str(x).replace("\u00a0", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def normalize_title(title: str) -> str:
+    """
+    Normalize titles for comparison / lookup.
+    """
+    if title is None:
+        return ""
+
+    t = str(title).lower()
+    t = re.sub(r"-.*", "", t)
+    t = re.sub(
+        r"\b(fresher|experienced|senior|junior|mid|lead|entry level|entry-level|associate)\b",
+        "",
+        t
+    )
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+
 # -----------------------------
 # Level 1: Skill normalization
 # -----------------------------
-
-# Trailing words that often add noise rather than distinct meaning
 SKILL_NOISE_WORDS = {
     "basics", "basic", "fundamentals", "fundamental",
     "beginner", "intro", "introductory", "advanced",
@@ -166,6 +177,22 @@ SKILL_NOISE_WORDS = {
     "concept", "knowledge", "scripting"
 }
 
+# Generic noisy tokens we do not want as extracted skills
+SKILL_STOPWORDS = {
+    "a", "an", "the", "and", "or", "with", "for", "to",
+    "of", "in", "on", "at", "by", "from", "linkedin",
+    "profile", "email", "phone", "address", "summary",
+    "experience", "education", "project", "projects",
+    "skills", "certification", "certifications"
+}
+
+GENERIC_STANDALONE_SKILLS = {
+    "ai",
+    "cloud",
+    "database",
+    "integration",
+    "security"
+}
 
 def normalize_skill_phrase(skill: str) -> str:
     """
@@ -180,26 +207,24 @@ def normalize_skill_phrase(skill: str) -> str:
     s = str(skill).strip().lower()
     s = re.sub(r"\s+", " ", s)
 
-    # Remove weak trailing words if the phrase has more than one token
+    # Remove obvious punctuation junk around the edges
+    s = s.strip(" ,;:.()[]{}<>-/\\|")
+
     parts = s.split(" ")
     while len(parts) > 1 and parts[-1] in SKILL_NOISE_WORDS:
         parts = parts[:-1]
 
     s = " ".join(parts).strip()
+    s = s.strip(" ,;:.()[]{}<>-/\\|")
+
     return s
 
 
 def expand_skill_variants(skill: str) -> List[str]:
     """
     Expand a skill phrase into a small set of useful variants.
-
     Example:
     'linux security' -> ['linux security', 'linux', 'security']
-
-    This supports:
-    - exact phrase matching
-    - token-level matching
-    - a few lightweight synonym expansions
     """
     s = normalize_skill_phrase(skill)
     if not s:
@@ -207,12 +232,10 @@ def expand_skill_variants(skill: str) -> List[str]:
 
     variants = {s}
 
-    # Add individual tokens for multi-word phrases
     tokens = [t for t in re.split(r"\s+", s) if t]
     if len(tokens) >= 2:
         variants.update(tokens)
 
-    # Small targeted synonym mapping
     synonym_map = {
         "ml": "machine learning",
         "dl": "deep learning",
@@ -229,10 +252,9 @@ def expand_skill_variants(skill: str) -> List[str]:
 # -----------------------------
 # Level 4: Semantic skill matching
 # -----------------------------
-
 def embed_skills_unique(skills: List[str]) -> np.ndarray:
     """
-    Embed a list of skill strings using the sentence-transformer model.
+    Embed a list of skill strings using the skill model.
     Returned embeddings are normalized.
     """
     emb = skill_model.encode(
@@ -246,7 +268,6 @@ def embed_skills_unique(skills: List[str]) -> np.ndarray:
 def build_job_skill_embeddings():
     """
     Precompute embeddings for all expanded job skill variants.
-    This is done once at startup to keep runtime matching fast.
     """
     global job_skill_to_emb
 
@@ -272,17 +293,7 @@ def build_job_skill_embeddings():
 def semantic_skill_gap(resume_skills_raw, job_skills_raw):
     """
     Robust skill matching for explanation purposes.
-
-    Steps:
-    1. Normalize and expand resume/job skill phrases
-    2. Perform exact matching on variants
-    3. Apply semantic similarity matching on still-unmatched job skills
-
-    Returns:
-    - matched_job_skills
-    - missing_job_skills
     """
-    # Build resume skill variant set
     resume_variants = set()
     resume_original = list(resume_skills_raw) if resume_skills_raw is not None else []
 
@@ -290,7 +301,6 @@ def semantic_skill_gap(resume_skills_raw, job_skills_raw):
         for v in expand_skill_variants(rs):
             resume_variants.add(v)
 
-    # Map each original job skill to its variants
     job_original = list(job_skills_raw) if job_skills_raw is not None else []
     job_skill_variants_map = {}
 
@@ -300,20 +310,18 @@ def semantic_skill_gap(resume_skills_raw, job_skills_raw):
     matched = []
     missing = []
 
-    # Step 1: exact variant matching
+    # Exact variant matching first
     for js in job_original:
         if any(v in resume_variants for v in job_skill_variants_map[js]):
             matched.append(normalize_skill_phrase(js))
         else:
             missing.append(normalize_skill_phrase(js))
 
-    # If there is nothing left to check semantically, return here
     if not missing or skill_model is None or not job_skill_to_emb:
         matched = sorted(set([m for m in matched if m]))
         missing = sorted(set([m for m in missing if m]))
         return matched, missing
 
-    # Embed resume variants once and cache them
     resume_variants_list = sorted(resume_variants)
     cache_key = tuple(resume_variants_list)
 
@@ -329,7 +337,6 @@ def semantic_skill_gap(resume_skills_raw, job_skills_raw):
     newly_matched = []
     still_missing = []
 
-    # Step 2: semantic similarity matching
     for js in missing:
         js_variants = expand_skill_variants(js)
         js_variant_embs = []
@@ -338,14 +345,13 @@ def semantic_skill_gap(resume_skills_raw, job_skills_raw):
             if v in job_skill_to_emb:
                 js_variant_embs.append(job_skill_to_emb[v])
 
-        # If we cannot compare embeddings, keep as missing
         if not js_variant_embs or resume_embs.shape[0] == 0:
             still_missing.append(js)
             continue
 
         js_variant_embs = np.vstack(js_variant_embs)
 
-        # Because embeddings are normalized, dot product = cosine similarity
+        # Embeddings are normalized, so dot product = cosine similarity
         sims = js_variant_embs @ resume_embs.T
         max_sim = float(np.max(sims))
 
@@ -361,23 +367,271 @@ def semantic_skill_gap(resume_skills_raw, job_skills_raw):
 
 
 # -----------------------------
+# Resume upload / extraction helpers
+# -----------------------------
+def extract_text_from_txt(file_bytes: bytes) -> str:
+    """
+    Extract text from a plain text file.
+    """
+    try:
+        return file_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def extract_text_from_pdf(file_bytes: bytes) -> str:
+    from io import BytesIO
+    from pypdf import PdfReader
+    """
+    Extract text from a PDF file using pypdf.
+    """
+    text_parts = []
+    reader = PdfReader(BytesIO(file_bytes))
+
+    for page in reader.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text_parts.append(page_text)
+
+    return "\n".join(text_parts)
+
+
+def extract_text_from_docx(file_bytes: bytes) -> str:
+    from io import BytesIO
+
+    from docx import Document
+    """
+    Extract text from a DOCX file using python-docx.
+    """
+    document = Document(BytesIO(file_bytes))
+    paragraphs = [p.text for p in document.paragraphs if p.text]
+    return "\n".join(paragraphs)
+
+
+def extract_resume_text(file_bytes: bytes, filename: str) -> str:
+    """
+    Dispatch text extraction based on file extension.
+    Supported:
+    - .txt
+    - .pdf
+    - .docx
+    """
+    filename_l = filename.lower()
+
+    if filename_l.endswith(".txt"):
+        return extract_text_from_txt(file_bytes)
+
+    if filename_l.endswith(".pdf"):
+        return extract_text_from_pdf(file_bytes)
+
+    if filename_l.endswith(".docx"):
+        return extract_text_from_docx(file_bytes)
+
+    raise ValueError("Unsupported file type. Please upload a .txt, .pdf, or .docx resume.")
+
+
+def simple_extract_skills_from_text(text: str) -> List[str]:
+    """
+    Lightweight skill extraction for uploaded resumes.
+
+    Strategy:
+    - only look for skills already known in the job dataset
+    - filter out obvious junk tokens
+    - filter out overly generic standalone skills
+    - keep more specific multi-word phrases
+    """
+    if not text:
+        return []
+
+    text_l = f" {normalize_text(text).lower()} "
+    found = set()
+
+    for skill in job_skill_freq.keys():
+        skill_l = normalize_skill_phrase(skill)
+        if not skill_l:
+            continue
+
+        # Remove obvious junk / stopwords
+        if skill_l in SKILL_STOPWORDS:
+            continue
+
+        # Skip tiny tokens that tend to produce junk matches
+        if len(skill_l) <= 1:
+            continue
+
+        pattern = r"(?<!\w)" + re.escape(skill_l) + r"(?!\w)"
+        if re.search(pattern, text_l):
+            found.add(skill_l)
+
+    cleaned = []
+    for s in sorted(found):
+        # Final cleanup pass
+        if s in SKILL_STOPWORDS:
+            continue
+        if len(s) <= 1:
+            continue
+
+        # Remove trailing stray punctuation
+        s = s.rstrip(")").rstrip("]").rstrip("}")
+
+        # Drop overly generic standalone skills,
+        # but keep them when part of a longer phrase
+        if s in GENERIC_STANDALONE_SKILLS:
+            continue
+
+        cleaned.append(s)
+
+    return sorted(set(cleaned))
+
+
+def simple_extract_experience_years(text: str) -> int:
+    """
+    Lightweight experience extraction from resume text.
+
+    Finds mentions such as:
+    - '2 years'
+    - '3+ years'
+    - '5 year'
+
+    Returns 0 if nothing reliable is found.
+    """
+    if not text:
+        return 0
+
+    text_l = text.lower()
+    matches = re.findall(r"(\d+)\s*\+?\s*(?:year|years)", text_l)
+
+    if not matches:
+        return 0
+
+    values = [int(m) for m in matches]
+    return max(values) if values else 0
+
+
+def simple_extract_education(text: str) -> str:
+    """
+    Lightweight education extraction.
+    Returns a short education label if present.
+    """
+    if not text:
+        return ""
+
+    text_l = text.lower()
+
+    education_patterns = [
+        r"(bachelor(?:'s)? degree[^.\n]*)",
+        r"(master(?:'s)? degree[^.\n]*)",
+        r"(phd[^.\n]*)",
+        r"(bsc[^.\n]*)",
+        r"(msc[^.\n]*)",
+    ]
+
+    for pat in education_patterns:
+        m = re.search(pat, text_l)
+        if m:
+            return normalize_text(m.group(1))
+
+    return ""
+
+
+def infer_role_from_resume_text(text: str) -> str:
+    from sklearn.metrics.pairwise import cosine_similarity
+    """
+    Infer a likely role direction from uploaded resume text.
+
+    Strategy:
+    - compare resume text against known normalized job titles
+    - choose the closest title in embedding space
+
+    This is still lightweight, but stronger than pure regex guessing.
+    """
+    if not text or embed_model is None or known_title_embeddings is None:
+        return ""
+
+    vec = embed_model.encode(
+        [normalize_text(text)],
+        normalize_embeddings=True,
+        show_progress_bar=False
+    )
+
+    sims = cosine_similarity(vec, known_title_embeddings)[0]
+    best_idx = int(np.argmax(sims))
+    return known_titles[best_idx] if known_titles else ""
+
+
+def parse_uploaded_resume_profile(raw_text: str) -> Dict[str, Any]:
+    """
+    Build a lightweight structured profile from uploaded resume text.
+
+    Returns:
+    - experience_years
+    - extracted_skills
+    - inferred_role
+    - education
+    """
+    clean_text = normalize_text(raw_text)
+
+    profile = {
+        "experience_years": simple_extract_experience_years(clean_text),
+        "extracted_skills": simple_extract_skills_from_text(clean_text),
+        "inferred_role": infer_role_from_resume_text(clean_text),
+        "education": simple_extract_education(clean_text),
+    }
+
+    return profile
+
+
+def build_uploaded_resume_text(raw_text: str, profile: Dict[str, Any]) -> str:
+    """
+    Build a temporary resume representation for uploaded resumes.
+
+    Option B improves on Option A by:
+    - using extracted structured features explicitly
+    - adding inferred role direction
+    - adding education
+    - still preserving the raw resume text for semantic richness
+    """
+    clean_text = normalize_text(raw_text)
+
+    experience_years = profile.get("experience_years", 0)
+    extracted_skills = profile.get("extracted_skills", [])
+    inferred_role = profile.get("inferred_role", "")
+    education = profile.get("education", "")
+
+    career_stage = "fresher" if experience_years == 0 else "experienced"
+    skills_str = ", ".join(extracted_skills)
+
+    resume_text = (
+        f"Candidate career stage: {career_stage}. "
+        f"Years of experience: {experience_years}. "
+        f"Inferred role direction: {inferred_role}. "
+        f"Education: {education}. "
+        f"Extracted skills: {skills_str}. "
+        f"Resume content: {clean_text}"
+    )
+
+    return resume_text
+
+
+# -----------------------------
 # Load assets (called from app startup)
 # -----------------------------
-
 def load_assets():
     """
-    Load processed data, embeddings, and skill explanation model once.
-    This keeps the API fast during requests.
+    Load processed data, embeddings, and models once at startup.
     """
+    import torch
+    from sentence_transformers import SentenceTransformer
+    import pandas as pd
+    from collections import Counter
     global jobs_df, resumes_df, job_emb, resume_emb
     global job_skill_freq, job_id_to_idx, resume_id_to_idx
-    global skill_model
+    global embed_model, skill_model
+    global known_titles, known_title_embeddings
 
-    # Load processed tables
     jobs_df = pd.read_parquet(JOBS_PARQUET)
     resumes_df = pd.read_parquet(RESUMES_PARQUET)
 
-    # Load semantic embeddings
     job_emb = np.load(JOB_EMB_NPY)
     resume_emb = np.load(RESUME_EMB_NPY)
 
@@ -389,58 +643,62 @@ def load_assets():
     jobs_df["min_years"] = mins
 
     # Build global job-skill frequency table
-    # Used to rank missing skills in explanations
     job_skill_freq = Counter()
     for skills in jobs_df["job_skills_list"]:
         job_skill_freq.update(list(skills) if skills is not None else [])
 
-    # Build fast lookup maps
+    # Build lookup maps
     job_id_to_idx = {jid: i for i, jid in enumerate(jobs_df["job_id"].astype(str))}
     resume_id_to_idx = {rid: i for i, rid in enumerate(resumes_df["resume_id"].astype(str))}
 
-    # Load semantic model for robust skill matching
+    # Load main embedding model
+    embed_model = SentenceTransformer(EMBED_MODEL_NAME)
+
+    # Load skill explanation model
     skill_model = SentenceTransformer(SKILL_MODEL_NAME)
 
-    # Precompute embeddings for job skill variants
+    # Precompute job skill embeddings
     build_job_skill_embeddings()
+
+    # Build a unique set of normalized titles for lightweight role inference
+    known_titles = sorted(set([normalize_title(t) for t in jobs_df["job_title"].tolist() if normalize_title(t)]))
+    if known_titles:
+        known_title_embeddings = embed_model.encode(
+            known_titles,
+            normalize_embeddings=True,
+            show_progress_bar=False
+        )
+    else:
+        known_title_embeddings = None
 
     print("[model] Assets loaded successfully")
     print(f"[model] experience penalty floor={EXP_PENALTY_FLOOR}, slope={EXP_PENALTY_SLOPE}")
 
 
 # -----------------------------
-# Public API functions
+# Core ranking helper
 # -----------------------------
-
-def match_jobs_for_resume(resume_id: str, top_k: int = 10):
+def _rank_jobs_from_resume_embedding(
+        resume_vector: np.ndarray,
+        resume_years: int,
+        resume_skills: List[str],
+        top_k: int = 10
+):
     """
-    Return top-K job matches for a resume.
+    Internal helper to rank jobs from any resume embedding + lightweight structured metadata.
 
-    Ranking:
-    - semantic similarity
-    - plus calibrated experience-aware reranking
-
-    Explanation:
-    - matched skills
-    - top missing skills
+    Used by both:
+    - stored dataset resumes
+    - uploaded resumes
     """
-    if resume_id not in resume_id_to_idx:
-        raise ValueError(f"Unknown resume_id: {resume_id}")
+    from sklearn.metrics.pairwise import cosine_similarity
+    sims = cosine_similarity(resume_vector, job_emb)[0]
 
-    r_idx = resume_id_to_idx[resume_id]
-    resume_years = int(resumes_df.loc[r_idx, "experience_years"])
-    resume_skills = resumes_df.loc[r_idx, "resume_skills_list"]
-
-    # Semantic similarity between this resume and all jobs
-    sims = cosine_similarity(resume_emb[r_idx:r_idx+1], job_emb)[0]
-
-    # Apply calibrated experience penalties
     penalties = np.array([
         experience_penalty(resume_years, mn)
         for mn in jobs_df["min_years"]
     ])
 
-    # Final ranking score
     final = (W_SEM * sims) + (W_EXP * (sims * penalties))
     top_idx = np.argsort(final)[::-1][:top_k]
 
@@ -448,10 +706,8 @@ def match_jobs_for_resume(resume_id: str, top_k: int = 10):
     for j_idx in top_idx:
         js = jobs_df.loc[j_idx, "job_skills_list"]
 
-        # More robust skill explanation
         matched, missing = semantic_skill_gap(resume_skills, js)
 
-        # Rank missing skills by how frequently they appear across jobs
         missing_sorted = sorted(
             missing,
             key=lambda s: job_skill_freq.get(s, 0),
@@ -470,12 +726,82 @@ def match_jobs_for_resume(resume_id: str, top_k: int = 10):
     return results
 
 
+# -----------------------------
+# Public API functions
+# -----------------------------
+def match_jobs_for_resume(resume_id: str, top_k: int = 10):
+    """
+    Return top-K job matches for a stored dataset resume.
+    """
+    if resume_id not in resume_id_to_idx:
+        raise ValueError(f"Unknown resume_id: {resume_id}")
+
+    r_idx = resume_id_to_idx[resume_id]
+    resume_years = int(resumes_df.loc[r_idx, "experience_years"])
+    resume_skills = resumes_df.loc[r_idx, "resume_skills_list"]
+
+    resume_vector = resume_emb[r_idx:r_idx+1]
+
+    return _rank_jobs_from_resume_embedding(
+        resume_vector=resume_vector,
+        resume_years=resume_years,
+        resume_skills=resume_skills,
+        top_k=top_k
+    )
+
+
+def match_uploaded_resume(file_bytes: bytes, filename: str, top_k: int = 10):
+    """
+    Option B:
+    - extract raw text from uploaded file
+    - build lightweight structured profile
+    - create temporary resume representation
+    - embed it
+    - rank jobs
+
+    Returns:
+    - filename
+    - extracted structured profile
+    - ranked job results
+    """
+    raw_text = extract_resume_text(file_bytes, filename)
+    raw_text = normalize_text(raw_text)
+
+    if not raw_text:
+        raise ValueError("Could not extract useful text from the uploaded resume.")
+
+    # Build lightweight profile
+    profile = parse_uploaded_resume_profile(raw_text)
+
+    # Build temporary text representation
+    resume_text = build_uploaded_resume_text(raw_text, profile)
+
+    # Embed the uploaded resume text
+    uploaded_resume_vector = embed_model.encode(
+        [resume_text],
+        normalize_embeddings=True,
+        show_progress_bar=False
+    )
+
+    results = _rank_jobs_from_resume_embedding(
+        resume_vector=uploaded_resume_vector,
+        resume_years=profile["experience_years"],
+        resume_skills=profile["extracted_skills"],
+        top_k=top_k
+    )
+
+    return {
+        "filename": filename,
+        "parsed_profile": profile,
+        "results": results
+    }
+
+
 def match_resumes_for_job(job_id: str, top_k: int = 10):
+    from sklearn.metrics.pairwise import cosine_similarity
     """
     Return top-K resumes for a job.
-
-    This function is still available in the service, even if the
-    refined project scope focuses primarily on job seekers.
+    This remains available even though the refined scope focuses on job seekers.
     """
     if job_id not in job_id_to_idx:
         raise ValueError(f"Unknown job_id: {job_id}")
@@ -484,16 +810,13 @@ def match_resumes_for_job(job_id: str, top_k: int = 10):
     job_min_years = jobs_df.loc[j_idx, "min_years"]
     job_skills = jobs_df.loc[j_idx, "job_skills_list"]
 
-    # Semantic similarity between this job and all resumes
     sims = cosine_similarity(job_emb[j_idx:j_idx+1], resume_emb)[0]
 
-    # Apply calibrated experience penalties relative to the job requirement
     penalties = np.array([
         experience_penalty(int(y), job_min_years)
         for y in resumes_df["experience_years"]
     ])
 
-    # Final ranking score
     final = (W_SEM * sims) + (W_EXP * (sims * penalties))
     top_idx = np.argsort(final)[::-1][:top_k]
 
