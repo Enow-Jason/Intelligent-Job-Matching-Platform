@@ -16,6 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
  * the AI-generated job recommendations.
  */
 @RestController
+@CrossOrigin(origins = "http://localhost:5173")
 @RequestMapping("/api/recommendations")
 public class JobRecommendationController {
 
