@@ -3,13 +3,14 @@ package com.example.jobplatform.dto;
 import java.util.List;
 
 /**
- * Represents one recommended demo job returned by the AI service.
+ * Represents one recommended job returned by the AI service.
  */
 public class JobRecommendationDto {
 
     private String job_id;
     private String job_title;
     private String role;
+    private String salary_range;
     private String company_name;
     private String location;
     private String country;
@@ -23,6 +24,9 @@ public class JobRecommendationDto {
     private double final_score;
     private List<String> matched_skills;
     private List<String> missing_skills_top10;
+
+    // New personalised explanation field
+    private List<String> why_recommended_bullets;
 
     public String getJob_id() {
         return job_id;
@@ -46,6 +50,14 @@ public class JobRecommendationDto {
 
     public void setRole(String role) {
         this.role = role;
+    }
+
+    public String getSalary_range() {
+        return salary_range;
+    }
+
+    public void setSalary_range(String salary_range) {
+        this.salary_range = salary_range;
     }
 
     public String getCompany_name() {
@@ -150,5 +162,13 @@ public class JobRecommendationDto {
 
     public void setMissing_skills_top10(List<String> missing_skills_top10) {
         this.missing_skills_top10 = missing_skills_top10;
+    }
+
+    public List<String> getWhy_recommended_bullets() {
+        return why_recommended_bullets;
+    }
+
+    public void setWhy_recommended_bullets(List<String> why_recommended_bullets) {
+        this.why_recommended_bullets = why_recommended_bullets;
     }
 }

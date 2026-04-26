@@ -230,3 +230,13 @@ Please regularly update this file to record your project progress. You should be
   produced small but consistent improvements, especially for fresher top-K relevance and MRR.
 - Updated the final AI microservice implementation to use the calibrated experience penalty.
 - Confirmed via FastAPI testing that the service now returns realistic fresher recommendations and more useful skill-gap explanations.
+
+## Week 29 [w/c 20 April 2026]
+
+- Finalised the full end-to-end system architecture using React, Spring Boot, FastAPI, and MySQL.
+- Integrated the frontend, backend, and AI microservice so users can upload a CV and receive recommendations through the web application.
+- Implemented user authentication, profile persistence, and password update functionality.
+- Improved the frontend into a more complete job-seeker product with dashboard, profile, job details, saved jobs, navigation menu, themes, sorting, filtering, and pagination.
+- Replaced the earlier demo jobs with a synthetic job postings dataset and rebuilt the preprocessing and embedding pipeline for the final demo.
+- Updated the recommendation service to return richer job information, better role handling, cleaner skill outputs, diversified results, and personalised recommendation explanations.
+- Completed end-to-end testing across multiple resume types and confirmed that the full user journey now works correctly.

@@ -4,12 +4,11 @@
   Stores:
   - authenticated user
   - latest recommendation result
-  - saved/bookmarked jobs
+  - saved/bookmarked jobs (scoped per user)
 */
 
 const AUTH_USER_KEY = "authUser";
 const RECOMMENDATION_DATA_KEY = "recommendationData";
-const BOOKMARKED_JOBS_KEY = "bookmarkedJobs";
 
 /* Save authenticated user object */
 export function setAuthUser(user) {
@@ -43,15 +42,30 @@ export function clearRecommendationData() {
     sessionStorage.removeItem(RECOMMENDATION_DATA_KEY);
 }
 
-/* Get bookmarked jobs */
+/*
+  Build a per-user localStorage key.
+  This prevents one account from seeing another account's saved jobs.
+*/
+function getScopedKey(baseKey) {
+    const user = getAuthUser();
+    const userId = user?.email?.toLowerCase()?.trim();
+
+    if (!userId) {
+        return `${baseKey}:anonymous`;
+    }
+
+    return `${baseKey}:${userId}`;
+}
+
+/* Get bookmarked jobs for the current logged-in user */
 export function getBookmarkedJobs() {
-    const raw = localStorage.getItem(BOOKMARKED_JOBS_KEY);
+    const raw = localStorage.getItem(getScopedKey("bookmarkedJobs"));
     return raw ? JSON.parse(raw) : [];
 }
 
-/* Save bookmarked jobs list */
+/* Save bookmarked jobs for the current logged-in user */
 export function setBookmarkedJobs(jobs) {
-    localStorage.setItem(BOOKMARKED_JOBS_KEY, JSON.stringify(jobs));
+    localStorage.setItem(getScopedKey("bookmarkedJobs"), JSON.stringify(jobs));
 }
 
 /* Check if a job is bookmarked */
@@ -64,7 +78,6 @@ export function isJobBookmarked(jobId) {
 export function addBookmarkedJob(job) {
     const jobs = getBookmarkedJobs();
 
-    // Prevent duplicates
     if (jobs.some((item) => item.job_id === job.job_id)) {
         return jobs;
     }
@@ -94,5 +107,4 @@ export function toggleBookmarkedJob(job) {
 export function clearUserSession() {
     localStorage.removeItem(AUTH_USER_KEY);
     sessionStorage.removeItem(RECOMMENDATION_DATA_KEY);
-
 }

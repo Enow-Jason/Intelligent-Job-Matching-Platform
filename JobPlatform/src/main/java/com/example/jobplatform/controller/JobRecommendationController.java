@@ -29,7 +29,7 @@ public class JobRecommendationController {
     @PostMapping(value = "/upload-resume", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public AiUploadResponse uploadResume(
             @RequestPart("file") MultipartFile file,
-            @RequestParam(defaultValue = "5") @Min(1) @Max(20) int topK
+            @RequestParam(defaultValue = "5") @Min(1) int topK
     ) {
         return aiRecommendationService.uploadResumeAndGetRecommendations(file, topK);
     }

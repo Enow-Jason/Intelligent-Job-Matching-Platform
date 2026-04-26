@@ -12,6 +12,14 @@ import {
 } from "../services/session";
 import { getUserProfile, saveUserProfile } from "../services/api";
 
+/*
+  Profile page with:
+  - personal information tab
+  - recommendation profile tab
+  - security tab
+  - stronger validation
+  - clearer missing-resume feedback
+*/
 export default function ProfilePage() {
     const navigate = useNavigate();
     const { fetchRecommendations, loading, error } = useRecommendations();
@@ -77,24 +85,60 @@ export default function ProfilePage() {
 
     const handleChange = (event) => {
         setSaveMessage("");
+
+        const { name, value } = event.target;
+
         setForm((prev) => ({
             ...prev,
-            [event.target.name]: event.target.value,
+            [name]: value,
+        }));
+
+        setFormErrors((prev) => ({
+            ...prev,
+            [name]: "",
         }));
     };
 
     const validate = () => {
         const nextErrors = {};
 
-        if (!form.firstName.trim()) nextErrors.firstName = "First name is required.";
-        if (!form.lastName.trim()) nextErrors.lastName = "Last name is required.";
-        if (!form.pronouns.trim()) nextErrors.pronouns = "Pronouns are required.";
-        if (!form.targetRole.trim()) nextErrors.targetRole = "Target role is required.";
-        if (!file) nextErrors.file = "Please upload your CV.";
+        if (!form.firstName.trim()) {
+            nextErrors.firstName = "First name is required.";
+        }
 
+        if (!form.lastName.trim()) {
+            nextErrors.lastName = "Last name is required.";
+        }
+
+        if (!form.pronouns.trim()) {
+            nextErrors.pronouns = "Pronouns are required.";
+        }
+
+        if (!form.targetRole.trim()) {
+            nextErrors.targetRole = "Target role is required.";
+        } else if (form.targetRole.trim().length < 2) {
+            nextErrors.targetRole = "Enter a more specific target role.";
+        }
+
+        /*
+          Allow any non-negative number for years of experience.
+        */
+        if (form.yearsOfExperience !== "" && Number(form.yearsOfExperience) < 0) {
+            nextErrors.yearsOfExperience = "Years of experience cannot be negative.";
+        }
+
+        /*
+          Allow any recommendation count above 0.
+          No hard upper cap anymore.
+        */
         const topKNumber = Number(form.topK);
-        if (!form.topK || Number.isNaN(topKNumber) || topKNumber < 1 || topKNumber > 20) {
-            nextErrors.topK = "Enter a number between 1 and 20.";
+        if (!form.topK || Number.isNaN(topKNumber) || topKNumber < 1) {
+            nextErrors.topK = "Enter a number greater than 0.";
+        }
+
+        if (!file) {
+            nextErrors.file =
+                "You need to upload your resume/CV before recommendations can be generated.";
         }
 
         setFormErrors(nextErrors);
@@ -194,6 +238,12 @@ export default function ProfilePage() {
                 {saveMessage && (
                     <div className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
                         {saveMessage}
+                    </div>
+                )}
+
+                {(formErrors.file || error) && (
+                    <div className="mb-6 mt-6 rounded-xl border border-rose-300 bg-rose-50 p-4 text-sm font-medium text-rose-700">
+                        {formErrors.file || error}
                     </div>
                 )}
 
@@ -306,7 +356,7 @@ export default function ProfilePage() {
                                     <div>
                                         <label className="label flex items-center">
                                             Years of experience
-                                            <InfoTooltip text="This helps the system avoid ranking roles that are unrealistically senior for your current stage." />
+                                            <InfoTooltip text="Enter any non-negative number. This helps the system adjust recommendations by seniority, but if the number is unrealistically high, recommendations may become less accurate." />
                                         </label>
                                         <input
                                             name="yearsOfExperience"
@@ -317,6 +367,9 @@ export default function ProfilePage() {
                                             onChange={handleChange}
                                             placeholder="0"
                                         />
+                                        {formErrors.yearsOfExperience && (
+                                            <p className="mt-2 text-sm text-rose-600">{formErrors.yearsOfExperience}</p>
+                                        )}
                                     </div>
 
                                     <div>
@@ -337,13 +390,12 @@ export default function ProfilePage() {
                                     <div>
                                         <label className="label flex items-center">
                                             Number of recommendations
-                                            <InfoTooltip text="Enter how many jobs you want to see. Use a value between 1 and 20 depending on whether you want a short shortlist or a broader set of options." />
+                                            <InfoTooltip text="Enter any number greater than 0. Larger values will return more jobs, but showing too many at once may make it harder to review the strongest matches first." />
                                         </label>
                                         <input
                                             name="topK"
                                             type="number"
                                             min="1"
-                                            max="20"
                                             className="input"
                                             value={form.topK}
                                             onChange={handleChange}
@@ -375,13 +427,18 @@ export default function ProfilePage() {
                                 </div>
                             </div>
 
-                            <div className="space-y-5">
+                            <div
+                                className={`space-y-5 rounded-2xl border p-4 ${
+                                    formErrors.file ? "border-rose-300 bg-rose-50" : "border-slate-200 bg-transparent"
+                                }`}
+                            >
                                 <UploadDropzone file={file} onFileChange={setFile} />
+
                                 {formErrors.file && (
-                                    <p className="text-sm text-rose-600">{formErrors.file}</p>
+                                    <p className="text-sm font-medium text-rose-600">{formErrors.file}</p>
                                 )}
 
-                                {error && (
+                                {error && !formErrors.file && (
                                     <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
                                         {error}
                                     </div>

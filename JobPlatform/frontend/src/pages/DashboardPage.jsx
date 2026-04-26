@@ -7,7 +7,7 @@ import { getRecommendationData } from "../services/session";
 
 /*
   Dashboard page showing recommendation results from the latest upload.
-  Includes filter and sorting controls.
+  Includes filtering, sorting, and pagination.
 */
 export default function DashboardPage() {
     const [data, setData] = useState(null);
@@ -15,8 +15,14 @@ export default function DashboardPage() {
         location: "",
         workType: "",
     });
-
     const [sortBy, setSortBy] = useState("matchScoreDesc");
+
+    /*
+      Pagination state.
+      Adjust PAGE_SIZE if you want more or fewer cards per page.
+    */
+    const PAGE_SIZE = 6;
+    const [currentPage, setCurrentPage] = useState(1);
 
     useEffect(() => {
         setData(getRecommendationData());
@@ -39,7 +45,6 @@ export default function DashboardPage() {
             return matchesLocation && matchesWorkType;
         });
 
-        // Sorting options for user control
         nextJobs = [...nextJobs].sort((a, b) => {
             if (sortBy === "matchScoreDesc") {
                 return (b.final_score || b.semantic_score || 0) - (a.final_score || a.semantic_score || 0);
@@ -58,7 +63,9 @@ export default function DashboardPage() {
             }
 
             if (sortBy === "titleAsc") {
-                return String(a.job_title || "").localeCompare(String(b.job_title || ""));
+                return String(a.role || a.job_title || "").localeCompare(
+                    String(b.role || b.job_title || "")
+                );
             }
 
             return 0;
@@ -66,6 +73,27 @@ export default function DashboardPage() {
 
         return nextJobs;
     }, [jobs, filters, sortBy]);
+
+    /*
+      Reset to page 1 whenever filtering/sorting changes,
+      so the user does not get stranded on an empty later page.
+    */
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [filters, sortBy, jobs.length]);
+
+    const totalPages = Math.max(1, Math.ceil(filteredJobs.length / PAGE_SIZE));
+    const startIndex = (currentPage - 1) * PAGE_SIZE;
+    const endIndex = startIndex + PAGE_SIZE;
+    const paginatedJobs = filteredJobs.slice(startIndex, endIndex);
+
+    const handlePreviousPage = () => {
+        setCurrentPage((prev) => Math.max(1, prev - 1));
+    };
+
+    const handleNextPage = () => {
+        setCurrentPage((prev) => Math.min(totalPages, prev + 1));
+    };
 
     return (
         <PageLayout>
@@ -148,7 +176,7 @@ export default function DashboardPage() {
                         <option value="skillsMatchedDesc">Sort by skills matched</option>
                         <option value="skillsMissingAsc">Sort by fewer skill gaps</option>
                         <option value="experienceAsc">Sort by experience label</option>
-                        <option value="titleAsc">Sort by job title</option>
+                        <option value="titleAsc">Sort by role/title</option>
                     </select>
                 </div>
             </div>
@@ -167,15 +195,46 @@ export default function DashboardPage() {
                         </div>
                     </div>
                 ) : (
-                    <div className="space-y-5">
-                        {filteredJobs.map((job) => (
-                            <JobCard
-                                key={job.job_id}
-                                job={job}
-                                profile={parsedProfile}
-                            />
-                        ))}
-                    </div>
+                    <>
+                        <div className="space-y-5">
+                            {paginatedJobs.map((job) => (
+                                <JobCard key={job.job_id} job={job} />
+                            ))}
+                        </div>
+
+                        {/* Bottom pagination controls */}
+                        {filteredJobs.length > PAGE_SIZE && (
+                            <div className="mt-8 flex flex-col items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row">
+                                <p className="text-sm text-slate-600">
+                                    Showing {startIndex + 1}–{Math.min(endIndex, filteredJobs.length)} of {filteredJobs.length} jobs
+                                </p>
+
+                                <div className="flex items-center gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={handlePreviousPage}
+                                        disabled={currentPage === 1}
+                                        className={`btn-secondary ${currentPage === 1 ? "cursor-not-allowed opacity-50" : ""}`}
+                                    >
+                                        Previous
+                                    </button>
+
+                                    <span className="text-sm font-medium text-slate-700">
+                    Page {currentPage} of {totalPages}
+                  </span>
+
+                                    <button
+                                        type="button"
+                                        onClick={handleNextPage}
+                                        disabled={currentPage === totalPages}
+                                        className={`btn-secondary ${currentPage === totalPages ? "cursor-not-allowed opacity-50" : ""}`}
+                                    >
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
         </PageLayout>

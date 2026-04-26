@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { signInUser } from "../services/api";
 import { setAuthUser, clearRecommendationData } from "../services/session";
 
+
 export default function SignInPage() {
     const navigate = useNavigate();
 
@@ -17,18 +18,35 @@ export default function SignInPage() {
 
     const validate = () => {
         const nextErrors = {};
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-        if (!form.email.trim()) nextErrors.email = "Email is required.";
-        if (!form.password.trim()) nextErrors.password = "Password is required.";
+        if (!form.email.trim()) {
+            nextErrors.email = "Email is required.";
+        } else if (!emailRegex.test(form.email.trim())) {
+            nextErrors.email = "Enter a valid email address.";
+        }
+
+        if (!form.password.trim()) {
+            nextErrors.password = "Password is required.";
+        }
 
         setErrors(nextErrors);
         return Object.keys(nextErrors).length === 0;
     };
 
     const handleChange = (event) => {
+        setServerError("");
+
+        const { name, value } = event.target;
+
         setForm((prev) => ({
             ...prev,
-            [event.target.name]: event.target.value,
+            [name]: value,
+        }));
+
+        setErrors((prev) => ({
+            ...prev,
+            [name]: "",
         }));
     };
 
@@ -52,7 +70,7 @@ export default function SignInPage() {
 
             clearRecommendationData();
 
-            // Go to dashboard after sign-in
+            // Redirect to dashboard after sign-in
             navigate("/dashboard");
         } catch (error) {
             setServerError(

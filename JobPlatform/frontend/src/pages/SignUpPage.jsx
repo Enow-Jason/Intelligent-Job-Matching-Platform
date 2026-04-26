@@ -21,16 +21,35 @@ export default function SignUpPage() {
 
     const validate = () => {
         const nextErrors = {};
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-        if (!form.firstName.trim()) nextErrors.firstName = "First name is required.";
-        if (!form.lastName.trim()) nextErrors.lastName = "Last name is required.";
-        if (!form.pronouns.trim()) nextErrors.pronouns = "Please select your pronouns.";
-        if (!form.email.trim()) nextErrors.email = "Email is required.";
-        if (!form.password.trim()) nextErrors.password = "Password is required.";
-        if (form.password.length < 8) {
+        if (!form.firstName.trim()) {
+            nextErrors.firstName = "First name is required.";
+        }
+
+        if (!form.lastName.trim()) {
+            nextErrors.lastName = "Last name is required.";
+        }
+
+        if (!form.pronouns.trim()) {
+            nextErrors.pronouns = "Please select your pronouns.";
+        }
+
+        if (!form.email.trim()) {
+            nextErrors.email = "Email is required.";
+        } else if (!emailRegex.test(form.email.trim())) {
+            nextErrors.email = "Enter a valid email address.";
+        }
+
+        if (!form.password.trim()) {
+            nextErrors.password = "Password is required.";
+        } else if (form.password.length < 8) {
             nextErrors.password = "Password must be at least 8 characters.";
         }
-        if (form.confirmPassword !== form.password) {
+
+        if (!form.confirmPassword.trim()) {
+            nextErrors.confirmPassword = "Please confirm your password.";
+        } else if (form.confirmPassword !== form.password) {
             nextErrors.confirmPassword = "Passwords do not match.";
         }
 
@@ -39,9 +58,18 @@ export default function SignUpPage() {
     };
 
     const handleChange = (event) => {
+        setServerError("");
+
+        const { name, value } = event.target;
+
         setForm((prev) => ({
             ...prev,
-            [event.target.name]: event.target.value,
+            [name]: value,
+        }));
+
+        setErrors((prev) => ({
+            ...prev,
+            [name]: "",
         }));
     };
 
@@ -65,7 +93,7 @@ export default function SignUpPage() {
 
             clearRecommendationData();
 
-            // Go to dashboard after sign-up
+            // Redirect to dashboard after sign-up
             navigate("/dashboard");
         } catch (error) {
             setServerError(

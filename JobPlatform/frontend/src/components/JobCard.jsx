@@ -9,9 +9,9 @@ import {
 
 /*
   Job card for recommendation results.
-  Uses richer dataset fields and supports bookmarking.
+  Uses richer dataset fields and backend-generated explanation bullets.
 */
-export default function JobCard({ job, profile }) {
+export default function JobCard({ job }) {
     const [bookmarked, setBookmarked] = useState(isJobBookmarked(job.job_id));
 
     const handleToggleBookmark = () => {
@@ -19,27 +19,14 @@ export default function JobCard({ job, profile }) {
         setBookmarked((prev) => !prev);
     };
 
-    // Build simple explanation bullets from available fields
-    const whyMatches = [];
+    // Use backend-generated personalised bullets when available
+    const whyMatches = Array.isArray(job.why_recommended_bullets)
+        ? job.why_recommended_bullets.slice(0, 3)
+        : [];
 
-    if (profile?.inferred_role && job?.role) {
-        whyMatches.push(
-            `Your profile aligns with roles similar to ${job.role}.`
-        );
-    }
-
-    if (job.matched_skills?.length) {
-        whyMatches.push(
-            `Matched skills include ${job.matched_skills.slice(0, 3).join(", ")}.`
-        );
-    }
-
-    if (job.experience) {
-        whyMatches.push(`This role expects ${job.experience}.`);
-    }
-
-    // Limit to 3 bullets max
-    const bullets = whyMatches.slice(0, 3);
+    // Keep only the cleanest few visible skill chips
+    const visibleMatchedSkills = (job.matched_skills || []).slice(0, 3);
+    const visibleMissingSkills = (job.missing_skills_top10 || []).slice(0, 2);
 
     return (
         <article className="card p-6">
@@ -47,8 +34,9 @@ export default function JobCard({ job, profile }) {
                 {/* Top row */}
                 <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
+                        {/* Prefer role for display, since that is now the stronger field */}
                         <h3 className="text-xl font-semibold text-slate-900">
-                            {job.job_title}
+                            {job.role || job.job_title}
                         </h3>
 
                         <p className="mt-1 text-sm font-medium text-slate-700">
@@ -57,6 +45,11 @@ export default function JobCard({ job, profile }) {
 
                         <p className="mt-1 text-sm text-slate-600">
                             {job.location}, {job.country} · {job.work_type}
+                            {job.salary_range && (
+                                <p className="mt-1 text-sm font-medium text-emerald-700">
+                                    Salary: {job.salary_range}
+                                </p>
+                            )}
                         </p>
 
                         <p className="mt-1 text-xs uppercase tracking-wide text-slate-500">
@@ -86,10 +79,10 @@ export default function JobCard({ job, profile }) {
                     {job.description_snippet}
                 </p>
 
-                {/* Explanation bullets */}
-                {bullets.length > 0 && (
+                {/* Personalised explanation bullets */}
+                {whyMatches.length > 0 && (
                     <ul className="space-y-2 text-sm text-slate-700">
-                        {bullets.map((point) => (
+                        {whyMatches.map((point) => (
                             <li key={point} className="flex items-start gap-2">
                                 <span className="mt-1 text-emerald-600">•</span>
                                 <span>{point}</span>
@@ -98,13 +91,13 @@ export default function JobCard({ job, profile }) {
                     </ul>
                 )}
 
-                {/* Skills */}
+                {/* Skill chips */}
                 <div className="flex flex-wrap gap-2">
-                    {(job.matched_skills || []).slice(0, 4).map((skill) => (
+                    {visibleMatchedSkills.map((skill) => (
                         <SkillTag key={skill} label={skill} variant="success" />
                     ))}
 
-                    {(job.missing_skills_top10 || []).slice(0, 2).map((skill) => (
+                    {visibleMissingSkills.map((skill) => (
                         <SkillTag key={skill} label={skill} variant="warning" />
                     ))}
                 </div>
@@ -118,7 +111,7 @@ export default function JobCard({ job, profile }) {
                     <div className="flex flex-col gap-3 sm:flex-row">
                         <Link
                             to={`/jobs/${job.job_id}`}
-                            state={{ job, profile }}
+                            state={{ job }}
                             className="btn-primary"
                         >
                             View details
